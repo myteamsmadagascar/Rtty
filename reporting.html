@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reporting Vicidial – Complet</title>
+
+<style>
+body{margin:0;font-family:system-ui,Arial;background:#f4f7ff;color:#0b1220}
+header{position:sticky;top:0;background:#fff;border-bottom:1px solid #dbe1f1;z-index:10}
+.top{max-width:1400px;margin:auto;padding:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+h1{margin:0;font-size:18px;color:#0b57d0}
+.wrap{max-width:1400px;margin:auto;padding:14px}
+.card{background:#fff;border-radius:14px;padding:14px;margin-bottom:14px;box-shadow:0 10px 30px rgba(0,0,0,.1)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.big{font-size:26px;font-weight:900;color:#0b57d0}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{border:1px solid #ccd4ea;padding:6px;white-space:nowrap}
+th{background:#eef3ff}
+button{padding:8px 12px;border-radius:10px;border:none;font-weight:900;cursor:pointer}
+.primary{background:#0b57d0;color:#fff}
+.danger{background:#ef4444;color:#fff}
+input,select{padding:8px;border-radius:8px;border:1px solid #ccd4ea;width:100%}
+.small{font-size:12px;color:#666}
+.list div{display:flex;justify-content:space-between;border-bottom:1px dashed #ccc;padding:4px 0}
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="top">
+    <h1>📊 Reporting Vicidial</h1>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button onclick="exportAll()">📤 Export tout</button>
+      <button class="danger" onclick="deleteAll()">🧨 Supprimer tout</button>
+      <button onclick="location.href='index.html'">🏠 Accueil</button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<!-- STATS -->
+<div class="card">
+  <h3>Statistiques (RDV = SALES)</h3>
+  <div class="grid">
+    <div><div class="small">Total appels</div><div id="sCalls" class="big">0</div></div>
+    <div><div class="small">Total RDV (SALES)</div><div id="sSales" class="big">0</div></div>
+    <div><div class="small">Agents distincts</div><div id="sAgents" class="big">0</div></div>
+  </div>
+</div>
+
+<!-- IMPORT -->
+<div class="card">
+  <h3>Import Vicidial</h3>
+  <input type="file" id="file">
+  <button class="primary" onclick="importFile()">Valider l’import</button>
+  <div id="importMsg" class="small"></div>
+</div>
+
+<!-- HISTORIQUE -->
+<div class="card">
+  <h3>Historique des imports</h3>
+  <div id="imports" class="list"></div>
+</div>
+
+<!-- FILTRES -->
+<div class="card">
+  <h3>Filtres</h3>
+  <div class="grid">
+    <input type="date" id="dFrom">
+    <input type="date" id="dTo">
+    <select id="fAgent"><option value="">Tous agents</option></select>
+    <select id="fStatus"><option value="">Tous statuts</option></select>
+  </div>
+  <button class="primary" onclick="apply()">Appliquer</button>
+</div>
+
+<!-- TABLE -->
+<div class="card">
+  <h3>Détails</h3>
+  <button onclick="exportFiltered()">📤 Export filtré</button>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Agent</th>
+        <th>Status</th>
+        <th>Téléphone</th>
+        <th>Durée</th>
+        <th>Recording</th>
+        <th>Commentaire</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</div>
+
+</div>
+
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js";
+import {
+  getFirestore,collection,addDoc,deleteDoc,doc,
+  onSnapshot,query,orderBy,serverTimestamp,getDocs,writeBatch
+} from "https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore.js";
+
+/* ===== FIREBASE AXOKIT ===== */
+const firebaseConfig={
+  apiKey:"AIzaSyA-G8P5NokxI6ZaIOMroQrH4x8mp_Q2dgg",
+  authDomain:"axokit-crm-ecoles-e56ab.firebaseapp.com",
+  projectId:"axokit-crm-ecoles-e56ab"
+};
+const app=initializeApp(firebaseConfig);
+const db=getFirestore(app);
+
+const CALLS="vicidial_calls";
+const IMPORTS="vicidial_imports";
+const SALES="SALE";
+
+let ALL=[],FILTERED=[];
+
+/* ===== LIVE DATA ===== */
+onSnapshot(query(collection(db,CALLS),orderBy("createdAt","desc")),snap=>{
+  ALL=snap.docs.map(d=>({id:d.id,...d.data()}));
+  apply();
+});
+onSnapshot(collection(db,IMPORTS),snap=>{
+  document.getElementById("imports").innerHTML=
+    snap.docs.map(d=>`
+      <div>
+        ${d.data().fileName}
+        <span>
+          <button onclick="exportImport('${d.id}')">Export</button>
+          <button class="danger" onclick="deleteImport('${d.id}')">Supprimer</button>
+        </span>
+      </div>`).join("");
+});
+
+/* ===== IMPORT ===== */
+window.importFile=async()=>{
+ const f=document.getElementById("file").files[0];
+ if(!f)return;
+ const text=await f.text();
+ const lines=text.split(/\r?\n/).filter(l=>l.trim());
+ const sep=lines[0].includes("\t")?"\t":lines[0].includes(";")?";":",";
+ const h=lines[0].split(sep).map(x=>x.toLowerCase());
+ const idx=n=>h.indexOf(n);
+
+ const imp=await addDoc(collection(db,IMPORTS),{
+   fileName:f.name,createdAt:serverTimestamp()
+ });
+
+ for(let i=1;i<lines.length;i++){
+  const c=lines[i].split(sep);
+  const status=(c[idx("status")]||"").toUpperCase().trim();
+  const key=[c[idx("call_date")],c[idx("user")],c[idx("phone_number")],status].join("|");
+
+  if(ALL.some(x=>x.dedupeKey===key))continue;
+
+  await addDoc(collection(db,CALLS),{
+    call_date:c[idx("call_date")]||"",
+    user:c[idx("user")]||"",
+    status,
+    phone_number:c[idx("phone_number")]||"",
+    length:Number(c[idx("length_in_sec")]||0),
+    recording:c[idx("recording_location")]||"",
+    comments:c[idx("comments")]||"",
+    dedupeKey:key,
+    importId:imp.id,
+    createdAt:serverTimestamp()
+  });
+ }
+ document.getElementById("importMsg").innerText="Import terminé";
+};
+
+/* ===== FILTER + STATS ===== */
+window.apply=()=>{
+ FILTERED=[...ALL];
+ let sales=0,agents=new Set();
+
+ FILTERED.forEach(r=>{
+  if(r.status===SALES)sales++;
+  if(r.user)agents.add(r.user);
+ });
+
+ document.getElementById("sCalls").innerText=FILTERED.length;
+ document.getElementById("sSales").innerText=sales;
+ document.getElementById("sAgents").innerText=agents.size;
+
+ document.getElementById("tbody").innerHTML=
+  FILTERED.map(r=>`
+    <tr>
+      <td>${r.call_date}</td>
+      <td>${r.user}</td>
+      <td>${r.status}</td>
+      <td>${r.phone_number}</td>
+      <td>${r.length}</td>
+      <td>${r.recording}</td>
+      <td>${r.comments}</td>
+      <td><button class="danger" onclick="del('${r.id}')">Supprimer</button></td>
+    </tr>`).join("");
+};
+
+/* ===== DELETE ===== */
+window.del=async(id)=>await deleteDoc(doc(db,CALLS,id));
+window.deleteImport=async(id)=>await deleteDoc(doc(db,IMPORTS,id));
+
+window.deleteAll=async()=>{
+ if(!confirm("SUPPRIMER TOUT LE REPORTING ?"))return;
+ const b=writeBatch(db);
+ const c=await getDocs(collection(db,CALLS));
+ c.forEach(d=>b.delete(d.ref));
+ const i=await getDocs(collection(db,IMPORTS));
+ i.forEach(d=>b.delete(d.ref));
+ await b.commit();
+};
+
+/* ===== EXPORT ===== */
+function csv(rows){
+ let s="call_date;user;status;phone;length;recording;comments\n";
+ rows.forEach(r=>{
+  s+=`${r.call_date};${r.user};${r.status};${r.phone_number};${r.length};${r.recording};${r.comments}\n`;
+ });
+ return s;
+}
+function dl(name,txt){
+ const a=document.createElement("a");
+ a.href=URL.createObjectURL(new Blob([txt],{type:"text/csv"}));
+ a.download=name;a.click();
+}
+window.exportAll=()=>dl("reporting_tout.csv",csv(ALL));
+window.exportFiltered=()=>dl("reporting_filtre.csv",csv(FILTERED));
+window.exportImport=id=>dl("reporting_import.csv",csv(ALL.filter(r=>r.importId===id)));
+</script>
+
+</body>
+</html>
